@@ -53,6 +53,12 @@ from wbb.utils.functions import (
     time_converter,
 )
 
+# استيراد دوال نظام الرتب
+from wbb.utils.ranks_db import get_user_rank_level, ARABIC_RANK_NAMES
+from wbb.utils.rank_permissions import (
+    can_ban, can_kick, can_mute, can_promote, can_demote
+)
+
 __MODULE__ = "Admin"
 __HELP__ = """
 **الأوامر المتاحة:**
@@ -71,8 +77,8 @@ __HELP__ = """
 /purge - حذف رسائل متعددة
 /purge [n] - حذف عدد n من الرسائل ابتداءً من الرسالة المراد الرد عليها
 /del - حذف الرسالة المراد الرد عليها
-/promote - رفع عضو كمشرف
-/fullpromote - رفع عضو كمشرف بكل الصلاحيات
+/promote - رفع عضو كمشرف (حسب نظام الرتب)
+/fullpromote - رفع عضو بكل الصلاحيات (حسب نظام الرتب)
 /demote - تنزيل مشرف
 /pin - تثبيت رسالة
 /mute - كتم مستخدم
@@ -85,8 +91,8 @@ __HELP__ = """
 **الأوامر العربية (بدون /):**
 حظر - حظر مستخدم (بالرد أو بذكر اسم المستخدم)
 طرد - طرد مستخدم
-رفع مشرف - رفع عضو كمشرف (صلاحيات محدودة)
-رفع مالك - رفع عضو كمشرف بكل الصلاحيات
+رفع مشرف - رفع عضو كمشرف (صلاحيات محدودة حسب الرتب)
+رفع مالك - رفع عضو كمشرف بكل الصلاحيات (حسب الرتب)
 تنزيل مشرف - تنزيل مشرف
 كتم - كتم مستخدم
 الغاء كتم - إلغاء كتم مستخدم
@@ -174,13 +180,11 @@ async def admin_cache_func(_, cmu: ChatMemberUpdated):
 
 async def extract_user_from_text(text: str, message: Message):
     """استخراج معرف المستخدم من نص عربي (مثلاً: @username أو الرد)"""
-    # إذا كان هناك رد، استخدم المرسل
     if message.reply_to_message:
         if message.reply_to_message.from_user:
             return message.reply_to_message.from_user.id
         elif message.reply_to_message.sender_chat:
             return message.reply_to_message.sender_chat.id
-    # إذا كان النص يحتوي على منشن
     parts = text.split()
     if len(parts) > 1:
         mention = parts[1].strip()
@@ -194,7 +198,7 @@ async def extract_user_from_text(text: str, message: Message):
 
 
 # --------------------------------------------------------------
-# دوال الأوامر الأصلية (مترجمة)
+# Purge Messages
 # --------------------------------------------------------------
 
 @app.on_message(filters.command("purge") & ~filters.private)
@@ -223,7 +227,6 @@ async def purgeFunc(_, message: Message):
     ):
         message_ids.append(message_id)
 
-        # الحد الأقصى لحذف الرسائل هو 100 في المرة الواحدة
         if len(message_ids) == 100:
             await app.delete_messages(
                 chat_id=chat_id,
@@ -241,12 +244,23 @@ async def purgeFunc(_, message: Message):
     await message.reply_text("**تم التنظيف بنجاح.**", delete_after=3)
 
 
+# --------------------------------------------------------------
+# Kick members
+# --------------------------------------------------------------
+
 @app.on_message(filters.command(["kick", "dkick"]) & ~filters.private)
-@adminsOnly("can_restrict_members")
 async def kickFunc(_, message: Message):
     user_id, reason = await extract_user_and_reason(message)
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # التحقق من الصلاحية باستخدام نظام الرتب
+    if not await can_kick(chat_id, actor_id, user_id):
+        return await message.reply_text("❌ ليس لديك صلاحية لطرد هذا المستخدم.")
+
     if user_id == BOT_ID:
         return await message.reply_text("**لا يمكنني طرد نفسي، يمكنني المغادرة إذا أردت.**")
     if user_id in SUDOERS:
@@ -270,13 +284,24 @@ async def kickFunc(_, message: Message):
     await message.chat.unban_member(user_id)
 
 
+# --------------------------------------------------------------
+# Ban members
+# --------------------------------------------------------------
+
 @app.on_message(filters.command(["ban", "dban", "tban"]) & ~filters.private)
-@adminsOnly("can_restrict_members")
 async def banFunc(_, message: Message):
     user_id, reason = await extract_user_and_reason(message, sender_chat=True)
 
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # التحقق من الصلاحية باستخدام نظام الرتب
+    if not await can_ban(chat_id, actor_id, user_id):
+        return await message.reply_text("❌ ليس لديك صلاحية لحظر هذا المستخدم.")
+
     if user_id == BOT_ID:
         return await message.reply_text("**لا يمكنني حظر نفسي، يمكنني المغادرة إذا أردت.**")
     if user_id in SUDOERS:
@@ -326,8 +351,12 @@ async def banFunc(_, message: Message):
     await message.reply_text(msg)
 
 
+# --------------------------------------------------------------
+# Unban members
+# --------------------------------------------------------------
+
 @app.on_message(filters.command("unban") & ~filters.private)
-@adminsOnly("can_restrict_members")
+@adminsOnly("can_restrict_members")  # نتركها لأن unban لا يؤذي
 async def unban_func(_, message: Message):
     reply = message.reply_to_message
 
@@ -350,7 +379,11 @@ async def unban_func(_, message: Message):
     await message.reply_text(f"**تم إلغاء حظر {umention}!**")
 
 
-@app.on_message(filters.command("listban") & SUDOERS & ~filters.private)
+# --------------------------------------------------------------
+# Ban users listed in a message (خاص بالمطورين فقط)
+# --------------------------------------------------------------
+
+@app.on_message(SUDOERS & filters.command("listban") & ~filters.private)
 async def list_ban_(c, message: Message):
     userid, msglink_reason = await extract_user_and_reason(message)
     if not userid or not msglink_reason:
@@ -401,7 +434,11 @@ async def list_ban_(c, message: Message):
     await m.edit_text(msg)
 
 
-@app.on_message(filters.command("listunban") & SUDOERS & ~filters.private)
+# --------------------------------------------------------------
+# Unban users listed in a message (خاص بالمطورين)
+# --------------------------------------------------------------
+
+@app.on_message(SUDOERS & filters.command("listunban") & ~filters.private)
 async def list_unban_(c, message: Message):
     userid, msglink = await extract_user_and_reason(message)
     if not userid or not msglink:
@@ -442,6 +479,10 @@ async def list_unban_(c, message: Message):
     await m.edit_text(msg)
 
 
+# --------------------------------------------------------------
+# Delete messages
+# --------------------------------------------------------------
+
 @app.on_message(filters.command("del") & ~filters.private)
 @adminsOnly("can_delete_messages")
 async def deleteFunc(_, message: Message):
@@ -451,12 +492,26 @@ async def deleteFunc(_, message: Message):
     await message.delete()
 
 
+# --------------------------------------------------------------
+# Promote Members (مع نظام الرتب)
+# --------------------------------------------------------------
+
 @app.on_message(filters.command(["promote", "fullpromote"]) & ~filters.private)
-@adminsOnly("can_promote_members")
 async def promoteFunc(_, message: Message):
     user_id = await extract_user(message)
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # تحديد الرتبة المطلوبة: إذا كان الأمر fullpromote نريد رتبة owner، وإلا admin
+    target_rank = "owner" if message.command[0].startswith("full") else "admin"
+
+    # التحقق من الصلاحية باستخدام نظام الرتب
+    allowed, reason = await can_promote(chat_id, actor_id, user_id, target_rank)
+    if not allowed:
+        return await message.reply_text(f"❌ {reason}")
 
     bot = (await app.get_chat_member(message.chat.id, BOT_ID)).privileges
     if user_id == BOT_ID:
@@ -468,7 +523,8 @@ async def promoteFunc(_, message: Message):
 
     umention = (await app.get_users(user_id)).mention
 
-    if message.command[0][0] == "f":
+    if message.command[0].startswith("full"):
+        # صلاحيات كاملة
         await message.chat.promote_member(
             user_id=user_id,
             privileges=ChatPrivileges(
@@ -482,30 +538,43 @@ async def promoteFunc(_, message: Message):
                 can_manage_video_chats=bot.can_manage_video_chats,
             ),
         )
-        return await message.reply_text(f"**تم رفع {umention} بكل الصلاحيات!**")
+        await message.reply_text(f"**تم رفع {umention} بكل الصلاحيات (رتبة مالك)!**")
+    else:
+        # صلاحيات محدودة (أدمن)
+        await message.chat.promote_member(
+            user_id=user_id,
+            privileges=ChatPrivileges(
+                can_change_info=False,
+                can_invite_users=bot.can_invite_users,
+                can_delete_messages=bot.can_delete_messages,
+                can_restrict_members=False,
+                can_pin_messages=False,
+                can_promote_members=False,
+                can_manage_chat=bot.can_manage_chat,
+                can_manage_video_chats=bot.can_manage_video_chats,
+            ),
+        )
+        await message.reply_text(f"**تم رفع {umention} كمشرف (رتبة أدمن)!**")
 
-    await message.chat.promote_member(
-        user_id=user_id,
-        privileges=ChatPrivileges(
-            can_change_info=False,
-            can_invite_users=bot.can_invite_users,
-            can_delete_messages=bot.can_delete_messages,
-            can_restrict_members=False,
-            can_pin_messages=False,
-            can_promote_members=False,
-            can_manage_chat=bot.can_manage_chat,
-            can_manage_video_chats=bot.can_manage_video_chats,
-        ),
-    )
-    await message.reply_text(f"**تم رفع {umention} كمشرف!**")
 
+# --------------------------------------------------------------
+# Demote Member (مع نظام الرتب)
+# --------------------------------------------------------------
 
 @app.on_message(filters.command("demote") & ~filters.private)
-@adminsOnly("can_promote_members")
 async def demote(_, message: Message):
     user_id = await extract_user(message)
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # التحقق من الصلاحية باستخدام نظام الرتب
+    allowed, reason = await can_demote(chat_id, actor_id, user_id)
+    if not allowed:
+        return await message.reply_text(f"❌ {reason}")
+
     if user_id == BOT_ID:
         return await message.reply_text("**لا يمكنني تنزيل نفسي.**")
     if user_id in SUDOERS:
@@ -534,8 +603,12 @@ async def demote(_, message: Message):
         await message.reply_text(str(e))
 
 
+# --------------------------------------------------------------
+# Pin Messages
+# --------------------------------------------------------------
+
 @app.on_message(filters.command(["pin", "unpin"]) & ~filters.private)
-@adminsOnly("can_pin_messages")
+@adminsOnly("can_pin_messages")  # نتركها لأنها لا تعتمد على الرتب كثيراً
 async def pin(_, message: Message):
     if not message.reply_to_message:
         return await message.reply_text("**الرجاء الرد على رسالة لتثبيتها أو إلغاء تثبيتها.**")
@@ -556,18 +629,30 @@ async def pin(_, message: Message):
     await save_filter(message.chat.id, "~pinned", filter_)
 
 
+# --------------------------------------------------------------
+# Mute members (مع نظام الرتب)
+# --------------------------------------------------------------
+
 @app.on_message(filters.command(["mute", "tmute"]) & ~filters.private)
-@adminsOnly("can_restrict_members")
 async def mute(_, message: Message):
     user_id, reason = await extract_user_and_reason(message)
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # التحقق من الصلاحية باستخدام نظام الرتب
+    if not await can_mute(chat_id, actor_id, user_id):
+        return await message.reply_text("❌ ليس لديك صلاحية لكتم هذا المستخدم.")
+
     if user_id == BOT_ID:
         return await message.reply_text("**لا يمكنني كتم نفسي.**")
     if user_id in SUDOERS:
         return await message.reply_text("**لا يمكنك كتم أحد المطورين!**")
     if user_id in (await list_admins(message.chat.id)):
         return await message.reply_text("**لا يمكنني كتم مشرف، أنت تعرف القواعد وأنا أعرفها.**")
+    
     mention = (await app.get_users(user_id)).mention
     keyboard = ikb({"🚨  إلغاء الكتم  🚨": f"unmute_{user_id}"})
     msg = (
@@ -607,12 +692,23 @@ async def mute(_, message: Message):
     await message.reply_text(msg, reply_markup=keyboard)
 
 
+# --------------------------------------------------------------
+# Unmute members
+# --------------------------------------------------------------
+
 @app.on_message(filters.command("unmute") & ~filters.private)
-@adminsOnly("can_restrict_members")
 async def unmute(_, message: Message):
     user_id = await extract_user(message)
     if not user_id:
         return await message.reply_text("**لم أتمكن من العثور على هذا المستخدم.**")
+    
+    chat_id = message.chat.id
+    actor_id = message.from_user.id
+
+    # التحقق من الصلاحية: نفس صلاحية الكتم
+    if not await can_mute(chat_id, actor_id, user_id):
+        return await message.reply_text("❌ ليس لديك صلاحية لإلغاء كتم هذا المستخدم.")
+
     await message.chat.unban_member(user_id)
     umention = (await app.get_users(user_id)).mention
     replied_message = message.reply_to_message
@@ -620,6 +716,10 @@ async def unmute(_, message: Message):
         message = replied_message
     await message.reply_text(f"**تم إلغاء كتم {umention}!**")
 
+
+# --------------------------------------------------------------
+# Ban deleted accounts
+# --------------------------------------------------------------
 
 @app.on_message(filters.command("ban_ghosts") & ~filters.private)
 @adminsOnly("can_restrict_members")
@@ -643,6 +743,10 @@ async def ban_deleted_accounts(_, message: Message):
     else:
         await m.edit("**لا توجد حسابات محذوفة في هذه الدردشة.**")
 
+
+# --------------------------------------------------------------
+# Warn system
+# --------------------------------------------------------------
 
 @app.on_message(filters.command(["warn", "dwarn"]) & ~filters.private)
 @adminsOnly("can_restrict_members")
@@ -746,6 +850,10 @@ async def check_warns(_, message: Message):
     return await message.reply_text(f"**{mention} لديه {warns}/3 تحذيرات.**")
 
 
+# --------------------------------------------------------------
+# Report
+# --------------------------------------------------------------
+
 @app.on_message(
     (
         filters.command("report")
@@ -801,6 +909,10 @@ async def report_user(_, message):
     await reply.reply_text(text)
 
 
+# --------------------------------------------------------------
+# Invite link
+# --------------------------------------------------------------
+
 @app.on_message(filters.command("invite"))
 @adminsOnly("can_invite_users")
 async def invite(_, message):
@@ -822,13 +934,9 @@ async def invite(_, message):
 # --------------------------------------------------------------
 
 @app.on_message(filters.text & filters.group & ~filters.command([]))
-async def arabic_command_handler(client, message: Message):
-    """
-    يلتقط الرسائل النصية في المجموعات ويتحقق مما إذا كانت تطابق أوامر عربية.
-    """
+async def arabic_command_handler(client, message):
     text = message.text.strip()
     
-    # إذا كان النص يبدأ بكلمة "حظر"
     if text.startswith("حظر"):
         await banFunc(client, message)
         return
@@ -844,22 +952,16 @@ async def arabic_command_handler(client, message: Message):
         return
     
     if text.startswith("رفع مشرف"):
-        # محاكاة الأمر /promote
         message.command = ["promote"] + message.text.split()[1:]
         await promoteFunc(client, message)
         return
     
     if text.startswith("تنزيل مشرف"):
-        # محاكاة الأمر /demote
         message.command = ["demote"] + message.text.split()[1:]
         await demote(client, message)
         return
     
     if text.startswith("كتم"):
-        # محاكاة الأمر /mute
-        if " " in text:
-            # قد يكون "كتم @username سبب" أو "كتم سبب" عند الرد
-            pass
         await mute(client, message)
         return
     
@@ -872,7 +974,6 @@ async def arabic_command_handler(client, message: Message):
         return
     
     if text.startswith("الغاء تثبيت"):
-        # محاكاة الأمر /unpin
         message.command = ["unpin"] + message.text.split()[1:]
         await pin(client, message)
         return
