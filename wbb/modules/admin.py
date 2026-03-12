@@ -821,7 +821,7 @@ async def invite(_, message):
 # معالج الأوامر العربية (بدون /)
 # --------------------------------------------------------------
 
-@app.on_message(filters.text & filters.group & ~filters.command)
+@app.on_message(filters.text & filters.group & ~filters.command([]))
 async def arabic_command_handler(client, message: Message):
     """
     يلتقط الرسائل النصية في المجموعات ويتحقق مما إذا كانت تطابق أوامر عربية.
