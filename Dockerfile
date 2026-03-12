@@ -13,11 +13,17 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
-# نسخ ملفات المشروع (بما في ذلك pyproject.toml)
+# تثبيت uv عبر pip (بدلاً من تحميله من الموقع)
+RUN pip install --no-cache-dir uv
+
+# نسخ ملفات تعريف الحزمة
+COPY pyproject.toml uv.lock ./
+
+# تثبيت الاعتماديات والمشروع في بيئة افتراضية
+RUN uv sync --no-dev
+
+# نسخ باقي الملفات
 COPY . .
 
-# تثبيت المشروع واعتمادياته باستخدام pip
-RUN pip install --no-cache-dir .
-
-# تشغيل البوت
-CMD ["python", "-m", "wbb"]
+# تشغيل البوت باستخدام uv run لتفعيل البيئة الافتراضية
+CMD ["uv", "run", "python", "-m", "wbb"]
