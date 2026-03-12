@@ -116,7 +116,11 @@ else:
         name="sessions/userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING
     )
 
-aiohttpsession = ClientSession()
+aiohttpsession = None
+
+async def init_aiohttp():
+    global aiohttpsession
+    aiohttpsession = ClientSession()
 
 arq = ARQ(ARQ_API_URL, ARQ_API_KEY, aiohttpsession)
 
